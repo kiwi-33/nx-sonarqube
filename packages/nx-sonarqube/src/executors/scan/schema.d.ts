@@ -8,9 +8,11 @@ export interface ScanExecutorSchema {
   projectVersion?: string;
   qualityGate?: boolean;
   qualityGateTimeout?: string;
+  skipExplicitDeps?: boolean;
   skipImplicitDeps?: boolean;
   testInclusions?: string;
   tsConfig?: string;
   verbose?: boolean;
+  coverageFilename?: string;
   extra?: { [option: string]: string };
 }

@@ -73,10 +73,12 @@ export async function determinePaths(
   options: ScanExecutorSchema,
   context: ExecutorContext
 ): Promise<{ lcovPaths: string; sources: string }> {
-  const sources: string[] = [];
+  let sources: string[] = [];
   const lcovPaths: string[] = [];
-  const deps = await getDependentPackagesForProject(context.projectName);
   const projectConfiguration = context.workspace.projects[context.projectName];
+  const coverageFilename = options.coverageFilename ?? 'lcov.info';
+
+  const deps = await getDependentPackagesForProject(context.projectName);
   deps.workspaceLibraries.push({
     name: context.projectName,
     type: DependencyType.static,
@@ -92,96 +94,104 @@ export async function determinePaths(
       sources.push(dep.sourceRoot);
 
       if (dep.testTarget) {
-        const executor: Executor = getExecutor(dep.testTarget.executor);
-        const coverageDirectoryName: CoverageDirectoryName =
-          getCoverageDirectoryName(executor);
-
-        if (dep.testTarget.options?.[coverageDirectoryName]) {
-          lcovPaths.push(
-            joinPathFragments(
-              dep.testTarget.options[coverageDirectoryName]
-                .replace(new RegExp(/'/g), '')
-                .replace(/^(?:\.\.\/)+/, ''),
-              'lcov.info'
-            )
-          );
-        } else if (
-          executor === '@nx/jest:jest' &&
-          dep.testTarget.options?.jestConfig
-        ) {
-          const jestConfigPath = dep.testTarget.options.jestConfig;
-          const jestConfig = readFileSync(jestConfigPath, 'utf-8');
-          const ast = tsquery.ast(jestConfig);
-          const nodes = tsquery(
-            ast,
-            'Identifier[name="coverageDirectory"] ~ StringLiteral',
-            { visitAllChildren: true }
-          );
-
-          if (nodes.length) {
-            lcovPaths.push(
-              joinPathFragments(
-                nodes[0]
-                  .getText()
-                  .replace(new RegExp(/'/g), '')
-                  .replace(/^(?:\.\.\/)+/, ''),
-                'lcov.info'
-              )
-            );
-          } else {
-            logger.warn(
-              `Skipping ${dep.name} as it does not have a coverageDirectory in ${jestConfigPath}`
-            );
-          }
-        } else if (executor === '@nx/vite:test') {
-          const configPath: string | undefined = getViteConfigPath(
-            context.root,
-            dep
-          );
-
-          if (configPath === undefined) {
-            logger.warn(
-              `Skipping ${dep.name} as we cannot find a vite config file`
-            );
-
-            return;
-          }
-
-          const config = readFileSync(configPath, 'utf-8');
-          const ast = tsquery.ast(config);
-          const nodes = tsquery(
-            ast,
-            'Identifier[name="reportsDirectory"] ~ StringLiteral',
-            { visitAllChildren: true }
-          );
-
-          if (nodes.length) {
-            lcovPaths.push(
-              joinPathFragments(
-                nodes[0]
-                  .getText()
-                  .replace(new RegExp(/'/g), '')
-                  .replace(/^(?:\.\.\/)+/, ''),
-                'lcov.info'
-              )
-            );
-          } else {
-            logger.warn(
-              `Skipping ${dep.name} as it does not have a reportsDirectory in ${configPath}`
-            );
-          }
-        } else {
-          logger.warn(`Skipping ${dep.name} as it does not have a jestConfig`);
-        }
+        buildLcov(lcovPaths, dep, coverageFilename, context);
       } else {
         logger.warn(`Skipping ${dep.name} as it does not have a test target`);
       }
     });
 
+  if (options.skipExplicitDeps) {
+    sources = [projectConfiguration.sourceRoot];
+  }
+
   return Promise.resolve({
     lcovPaths: lcovPaths.join(','),
     sources: sources.join(','),
   });
+}
+
+export async function buildLcov(
+  lcovPaths: string[],
+  dep: WorkspaceLibrary,
+  coverageFilename: string,
+  context: ExecutorContext
+) {
+  const executor: Executor = getExecutor(dep.testTarget.executor);
+  const coverageDirectoryName: CoverageDirectoryName =
+    getCoverageDirectoryName(executor);
+
+  if (dep.testTarget.options?.[coverageDirectoryName]) {
+    lcovPaths.push(
+      joinPathFragments(
+        dep.testTarget.options[coverageDirectoryName]
+          .replace(new RegExp(/'/g), '')
+          .replace(/^(?:\.\.\/)+/, ''),
+        coverageFilename
+      )
+    );
+  } else if (
+    executor === '@nx/jest:jest' &&
+    dep.testTarget.options?.jestConfig
+  ) {
+    const jestConfigPath = dep.testTarget.options.jestConfig;
+    const jestConfig = readFileSync(jestConfigPath, 'utf-8');
+    const ast = tsquery.ast(jestConfig);
+    const nodes = tsquery(
+      ast,
+      'Identifier[name="coverageDirectory"] ~ StringLiteral',
+      { visitAllChildren: true }
+    );
+
+    if (nodes.length) {
+      lcovPaths.push(
+        joinPathFragments(
+          nodes[0]
+            .getText()
+            .replace(new RegExp(/'/g), '')
+            .replace(/^(?:\.\.\/)+/, ''),
+          coverageFilename
+        )
+      );
+    } else {
+      logger.warn(
+        `Skipping ${dep.name} as it does not have a coverageDirectory in ${jestConfigPath}`
+      );
+    }
+  } else if (executor === '@nx/vite:test') {
+    const configPath: string | undefined = getViteConfigPath(context.root, dep);
+
+    if (configPath === undefined) {
+      logger.warn(`Skipping ${dep.name} as we cannot find a vite config file`);
+
+      return;
+    }
+
+    const config = readFileSync(configPath, 'utf-8');
+    const ast = tsquery.ast(config);
+    const nodes = tsquery(
+      ast,
+      'Identifier[name="reportsDirectory"] ~ StringLiteral',
+      { visitAllChildren: true }
+    );
+
+    if (nodes.length) {
+      lcovPaths.push(
+        joinPathFragments(
+          nodes[0]
+            .getText()
+            .replace(new RegExp(/'/g), '')
+            .replace(/^(?:\.\.\/)+/, ''),
+          coverageFilename
+        )
+      );
+    } else {
+      logger.warn(
+        `Skipping ${dep.name} as it does not have a reportsDirectory in ${configPath}`
+      );
+    }
+  } else {
+    logger.warn(`Skipping ${dep.name} as it does not have a jestConfig`);
+  }
 }
 
 export async function scanner(
